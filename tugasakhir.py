@@ -27,16 +27,27 @@ def gen_id():
     return datetime.now().strftime('%Y%m%d%H%M%S%f')
 
 def count_assigned(reservations, target_date):
-    return sum(1 for r in reservations if r.get('date') == target_date and r.get('table') is not None)
+    count = 0
+    for r in reservations:
+        if r.get('date') == target_date and r.get('table') is not None:
+            count += 1
+    return count
 
 def available_tables(reservations, target_date):
     used = count_assigned(reservations, target_date)
     return max(0, TOTAL_TABLES - used)
 
 def get_unused_tables(reservations, target_date):
-    used_tables = [r['table'] for r in reservations if r.get('date') == target_date and r.get('table') is not None]
+    used_tables = []
+    for r in reservations:
+        if r.get('date') == target_date and r.get('table') is not None:
+            used_tables.append(r['table'])
     all_tables = list(range(1, TOTAL_TABLES + 1))
-    return [t for t in all_tables if t not in used_tables]
+    unused = []
+    for t in all_tables:
+        if t not in used_tables:
+            unused.append(t)
+    return unused
 
 class User(ABC):
     @abstractmethod
@@ -353,7 +364,13 @@ class AppClass(tk.Tk):
             target = filter_entry.get().strip()
             for r in tree.get_children():
                 tree.delete(r)
-            rows = self.reservations if not target else [r for r in self.reservations if r.get('date') == target]
+            rows = []
+            if not target:
+                rows = self.reservations
+            else:
+                for r in self.reservations:
+                    if r.get('date') == target:
+                        rows.append(r)
             for r in rows:
                 tableval = r['table'] if r['table'] is not None else '-'
                 tree.insert('', 'end', values=(
@@ -399,7 +416,11 @@ class AppClass(tk.Tk):
             confirm = messagebox.askyesno("Konfirmasi", "Yakin ingin menghapus reservasi ini?")
             if not confirm:
                 return
-            self.reservations = [r for r in self.reservations if r['id'] != rid]
+            new_reservations = []
+            for r in self.reservations:
+                if r['id'] != rid:
+                    new_reservations.append(r)
+            self.reservations = new_reservations
             self.data['reservations'] = self.reservations
             save_data(self.data)
             refresh()
