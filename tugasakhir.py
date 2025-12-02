@@ -1,439 +1,411 @@
-
 import tkinter as tk
 from tkinter import ttk, messagebox
+import json
+import os
+from datetime import date, datetime, timedelta
+from abc import ABC, abstractmethod
+import calendar
 import random
-import datetime
-import math
 
-TOTAL_MEJA_UMUM = 20
-KAPASITAS_MEJA = 6
-TOTAL_RUANG_VIP = 5
-TOTAL_RUANG_EVENT = 5
-STAFF_USERNAME = "izin"
-STAFF_PASSWORD = "masukbang"
+DATA_FILE = 'restobook_data.json'
+TOTAL_TABLES = 10
 
+def load_data():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {'reservations': []}
+    return {'reservations': []}
 
-reservasi_umum = {}
-reservasi_vip = {}
-reservasi_event = {}
+def save_data(d):
+    with open(DATA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(d, f, indent=2, ensure_ascii=False)
 
-reservation_counter = 0
+def gen_id():
+    return datetime.now().strftime('%Y%m%d%H%M%S%f')
 
+def count_assigned(reservations, target_date):
+    return sum(1 for r in reservations if r.get('date') == target_date and r.get('table') is not None)
 
-def next_reservation_id():
-    global reservation_counter
-    reservation_counter += 1
-    return reservation_counter
+def available_tables(reservations, target_date):
+    used = count_assigned(reservations, target_date)
+    return max(0, TOTAL_TABLES - used)
 
+def get_unused_tables(reservations, target_date):
+    used_tables = [r['table'] for r in reservations if r.get('date') == target_date and r.get('table') is not None]
+    all_tables = list(range(1, TOTAL_TABLES + 1))
+    return [t for t in all_tables if t not in used_tables]
 
-def parse_date(date_str):
-    try:
-        return datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-    except Exception:
-        return None
+class User(ABC):
+    @abstractmethod
+    def open_view(self):
+        pass
 
+class Staff(User):
+    def __init__(self, username, password):
+        self.__username = username
+        self.__password = password
 
-def parse_time(time_str):
-    try:
-        return datetime.datetime.strptime(time_str, "%H:%M").time()
-    except Exception:
-        return None
+    def check(self, u, p):
+        return u == self.__username and p == self.__password
 
+    def open_view(self):
+        App.show_staff_panel()
 
-def get_taken_tables_umum(date_str):
-    taken = set()
-    items = reservasi_umum.get(date_str, [])
-    for r in items:
-        for t in r.get('assigned', []):
-            taken.add(int(t))
-    return taken
+class Customer(User):
+    def open_view(self):
+        App.show_customer_form()
 
+class CalendarPopup(tk.Toplevel):
+    def __init__(self, master, set_callback, init_date=None):
+        super().__init__(master)
+        self.set_callback = set_callback
+        self.transient(master)
+        self.title('Pilih Tanggal')
+        self.resizable(False, False)
+        self.selected = init_date or date.today()
+        self.year = self.selected.year
+        self.month = self.selected.month
+        self.build()
 
-def get_taken_rooms(res_dict, date_str):
-    taken = set()
-    items = res_dict.get(date_str, [])
-    for r in items:
-        # assigned contains room numbers (single or list)
-        for t in r.get('assigned', []):
-            taken.add(int(t))
-    return taken
+    def build(self):
+        header = tk.Frame(self)
+        header.pack(padx=8, pady=6)
+        tk.Button(header, text='<', width=3, command=self.prev).grid(row=0, column=0)
+        self.title_lbl = tk.Label(header, text=f'{calendar.month_name[self.month]} {self.year}', font=('Helvetica', 11, 'bold'))
+        self.title_lbl.grid(row=0, column=1, padx=8)
+        tk.Button(header, text='>', width=3, command=self.next).grid(row=0, column=2)
+        body = tk.Frame(self)
+        body.pack(padx=8, pady=6)
+        self.body = body
+        self.draw()
 
+    def draw(self):
+        for w in self.body.winfo_children():
+            w.destroy()
+        days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+        for i, d in enumerate(days):
+            tk.Label(self.body, text=d).grid(row=0, column=i, padx=4, pady=2)
+        cal = calendar.Calendar(firstweekday=6)
+        row = 1
+        for week in cal.monthdayscalendar(self.year, self.month):
+            col = 0
+            for day in week:
+                if day == 0:
+                    tk.Label(self.body, text='').grid(row=row, column=col, padx=3, pady=3)
+                else:
+                    btn = tk.Button(self.body, text=str(day), width=4, command=lambda d=day: self.select(d))
+                    dt = date(self.year, self.month, day)
+                    if dt < date.today():
+                        btn.config(state='disabled')
+                    btn.grid(row=row, column=col, padx=3, pady=3)
+                col += 1
+            row += 1
 
-def assign_tables_umum(date_str, num_people):
-    needed_tables = math.ceil(num_people / KAPASITAS_MEJA)
-    taken = get_taken_tables_umum(date_str)
-    all_tables = set(range(1, TOTAL_MEJA_UMUM + 1))
-    free = list(all_tables - taken)
-    if len(free) < needed_tables:
-        return None
-    assigned = random.sample(free, needed_tables)
-    assigned.sort()
-    return [str(x) for x in assigned]
+    def select(self, day):
+        chosen = date(self.year, self.month, day)
+        self.set_callback(chosen.strftime('%Y-%m-%d'))
+        self.destroy()
 
+    def prev(self):
+        if self.month == 1:
+            self.month = 12
+            self.year -= 1
+        else:
+            self.month -= 1
+        self.title_lbl.config(text=f'{calendar.month_name[self.month]} {self.year}')
+        self.draw()
 
-def assign_room_generic(res_dict, date_str, total_rooms):
-    taken = get_taken_rooms(res_dict, date_str)
-    all_rooms = set(range(1, total_rooms + 1))
-    free = list(all_rooms - taken)
-    if not free:
-        return None
-    assigned = [str(random.choice(free))]
-    return assigned
+    def next(self):
+        if self.month == 12:
+            self.month = 1
+            self.year += 1
+        else:
+            self.month += 1
+        self.title_lbl.config(text=f'{calendar.month_name[self.month]} {self.year}')
+        self.draw()
 
-
-class RestoBookApp(tk.Tk):
+class AppClass(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("RestoBook - Sistem Reservasi Meja Restoran")
-        self.geometry("880x640")
-        self.resizable(False, False)
+        self.title('RestoBook')
+        self.geometry('820x520')
+        self.configure(bg='#EFE6DB')
+        self.data = load_data()
+        self.reservations = self.data.get('reservations', [])
+        self.staff_account = Staff('admin', '1234')
+        self.build_header()
+        self.main_frame = tk.Frame(self, bg=self['bg'])
+        self.main_frame.pack(fill='both', expand=True, padx=16, pady=12)
+        self.show_home()
 
-        self.configure(bg="#0f0f0f")
-        style = ttk.Style(self)
-        style.theme_use('clam')
+    def build_header(self):
+        header = tk.Frame(self, bg='#4B2E22', height=64)
+        header.pack(fill='x')
+        tk.Label(header, text='RestoBook', bg=header['bg'], fg='#F7EDE2', font=('Georgia', 20, 'bold')).pack(side='left', padx=12)
+        tk.Label(header, text='Reservasi Online', bg=header['bg'], fg='#F7EDE2', font=('Helvetica', 10)).pack(side='left')
+        btn_frame = tk.Frame(header, bg=header['bg'])
+        btn_frame.pack(side='right', padx=12)
+        tk.Button(btn_frame, text='Masuk sebagai Pelanggan', command=self.show_customer_form, bg='#C69C6D', fg='white', relief='flat').pack(side='left', padx=6)
+        tk.Button(btn_frame, text='Masuk sebagai Staf', command=self.staff_login_popup, bg='#C69C6D', fg='white', relief='flat').pack(side='left', padx=6)
+        tk.Button(btn_frame, text='Export CSV', command=self.export_csv, bg='#C69C6D', fg='white', relief='flat').pack(side='left', padx=6)
 
-        style.configure('TFrame', background='#0f0f0f')
-        style.configure('TLabel', background='#0f0f0f', foreground='white', font=('Segoe UI', 10))
-        style.configure('Title.TLabel', font=('Segoe UI', 16, 'bold'))
-        style.configure('TButton', background='#1f1f1f', foreground='white', font=('Segoe UI', 10))
-        style.map('TButton', background=[('active', '#2f2f2f')])
-        style.configure('TEntry', fieldbackground='#1f1f1f', foreground='white')
-        style.configure('Treeview', background='#1f1f1f', fieldbackground='#1f1f1f', foreground='white')
-        style.configure('Treeview.Heading', background='#151515', foreground='white')
+    def clear_main(self):
+        for w in self.main_frame.winfo_children():
+            w.destroy()
 
-        self.container = ttk.Frame(self)
-        self.container.place(relx=0.02, rely=0.02, relwidth=0.96, relheight=0.96)
-
-        header = ttk.Label(self.container, text='Selamat datang di Lembur Kuring - RestoBook', style='Title.TLabel')
-        header.pack(pady=8)
-
-        self.main_frame = ttk.Frame(self.container)
-        self.main_frame.pack(fill='both', expand=True)
-
-        self.create_main_menu()
-
-    def clear_frame(self, frame):
-        for child in frame.winfo_children():
-            child.destroy()
-
-    def create_main_menu(self):
-        self.clear_frame(self.main_frame)
-
-        left = ttk.Frame(self.main_frame)
-        left.place(relx=0.02, rely=0.03, relwidth=0.46, relheight=0.94)
-
-        ttk.Label(left, text='Pilih Peran', font=('Segoe UI', 14, 'bold')).pack(pady=10)
-
-        ttk.Button(left, text='Pelanggan (Reservasi)', command=self.open_customer_form, width=30).pack(pady=8)
-        ttk.Button(left, text='Staf (Login)', command=self.open_staff_login, width=30).pack(pady=8)
-
-        right = ttk.Frame(self.main_frame)
-        right.place(relx=0.5, rely=0.03, relwidth=0.48, relheight=0.94)
-
-        ttk.Label(right, text='Menu Restoran', font=('Segoe UI', 14, 'bold')).pack(pady=6)
-
-        menu_canvas = tk.Canvas(right, bg='#0f0f0f', highlightthickness=0)
-        menu_canvas.pack(fill='both', expand=True)
-
-        menu_items = [
-            ('Nasi Goreng Spesial', 'Rp 30.000'),
-            ('Mie Goreng Jawa', 'Rp 28.000'),
-            ('Sate Ayam Madura (6 tusuk)', 'Rp 35.000'),
-            ('Ayam Bakar Taliwang', 'Rp 42.000'),
-            ('Ikan Bakar Rica', 'Rp 45.000'),
-            ('Sop Buntut', 'Rp 65.000'),
-            ('Gado-Gado', 'Rp 25.000'),
-            ('Tumis Kangkung', 'Rp 18.000'),
-            ('Es Teh Manis', 'Rp 7.000'),
-            ('Es Jeruk', 'Rp 10.000'),
-            ('Kopi Tubruk', 'Rp 12.000'),
-            ('Pisang Goreng', 'Rp 15.000'),
-            ('Martabak Manis', 'Rp 40.000'),
-            ('Rendang Daging', 'Rp 55.000'),
-            ('Nasi Campur (Paket)', 'Rp 33.000'),
-            ('Bakso Uruk', 'Rp 20.000'),
-            ('Pempek Palembang', 'Rp 22.000'),
-            ('Siomay Bandung', 'Rp 19.000'),
-            ('Sop Kambing', 'Rp 60.000'),
-            ('Es Campur', 'Rp 18.000'),
-        ]
-
-        y = 10
-        for name, price in menu_items:
-            menu_canvas.create_text(10, y, anchor='nw', text=f"{name} - {price}", fill='white', font=('Segoe UI', 10))
-            y += 24
-
-    def open_customer_form(self):
-        self.clear_frame(self.main_frame)
-
-        frame = ttk.Frame(self.main_frame)
+    def show_home(self):
+        self.clear_main()
+        frame = tk.Frame(self.main_frame, bg=self['bg'])
         frame.pack(fill='both', expand=True)
+        tk.Label(frame, text='Selamat datang di RestoBook', font=('Helvetica', 26, 'bold'), bg=self['bg']).pack(pady=(80, 8))
+        tk.Label(frame, text='Reservasi meja restoran secara online', font=('Helvetica', 12), bg=self['bg']).pack(pady=(0, 6))
+        tk.Label(frame, text=f'Total meja per hari: {TOTAL_TABLES}', font=('Helvetica', 11), bg=self['bg']).pack(pady=(0, 24))
+        btn_frame = tk.Frame(frame, bg=self['bg'])
+        btn_frame.pack()
+        tk.Button(btn_frame, text='Masuk sebagai Pelanggan', font=('Helvetica', 12), width=22, height=2, bg='#C69C6D', fg='white', command=self.show_customer_form).grid(row=0, column=0, padx=12, pady=8)
+        tk.Button(btn_frame, text='Masuk sebagai Staf', font=('Helvetica', 12), width=22, height=2, bg='#C69C6D', fg='white', command=self.staff_login_popup).grid(row=0, column=1, padx=12, pady=8)
 
-        ttk.Label(frame, text='Form Reservasi - Pelanggan', font=('Segoe UI', 14, 'bold')).pack(pady=6)
+    def staff_login_popup(self):
+        dlg = tk.Toplevel(self)
+        dlg.title('Login Staff')
+        dlg.geometry('340x220')
+        dlg.transient(self)
+        tk.Label(dlg, text='Username').pack(pady=6)
+        ue = tk.Entry(dlg)
+        ue.pack()
+        tk.Label(dlg, text='Password').pack(pady=6)
+        pe = tk.Entry(dlg, show='*')
+        pe.pack()
 
-        form = ttk.Frame(frame)
-        form.pack(pady=8)
-
-        # Fields
-        ttk.Label(form, text='Nama Lengkap:').grid(row=0, column=0, sticky='w', padx=4, pady=4)
-        nama_entry = ttk.Entry(form, width=40)
-        nama_entry.grid(row=0, column=1, padx=4, pady=4)
-
-        ttk.Label(form, text='No. HP:').grid(row=1, column=0, sticky='w', padx=4, pady=4)
-        hp_entry = ttk.Entry(form, width=40)
-        hp_entry.grid(row=1, column=1, padx=4, pady=4)
-
-        ttk.Label(form, text='Tanggal (YYYY-MM-DD):').grid(row=2, column=0, sticky='w', padx=4, pady=4)
-        tanggal_entry = ttk.Entry(form, width=40)
-        tanggal_entry.grid(row=2, column=1, padx=4, pady=4)
-
-        ttk.Label(form, text='Waktu (HH:MM, maks. 19:00):').grid(row=3, column=0, sticky='w', padx=4, pady=4)
-        waktu_entry = ttk.Entry(form, width=40)
-        waktu_entry.grid(row=3, column=1, padx=4, pady=4)
-
-        ttk.Label(form, text='Jumlah Orang:').grid(row=4, column=0, sticky='w', padx=4, pady=4)
-        orang_spin = tk.Spinbox(form, from_=1, to=200, width=8)
-        orang_spin.grid(row=4, column=1, sticky='w', padx=4, pady=4)
-
-        ttk.Label(form, text='Tipe Ruangan:').grid(row=5, column=0, sticky='w', padx=4, pady=4)
-        tipe_combo = ttk.Combobox(form, values=['Umum', 'VIP', 'Event'], state='readonly')
-        tipe_combo.current(0)
-        tipe_combo.grid(row=5, column=1, sticky='w', padx=4, pady=4)
-
-        btn_frame = ttk.Frame(frame)
-        btn_frame.pack(pady=10)
-
-        def submit_reservation():
-            nama = nama_entry.get().strip()
-            hp = hp_entry.get().strip()
-            tanggal = tanggal_entry.get().strip()
-            waktu = waktu_entry.get().strip()
-            try:
-                orang = int(orang_spin.get())
-            except Exception:
-                orang = 0
-            tipe = tipe_combo.get()
-
-            if not nama or not hp or not tanggal or not waktu or orang <= 0:
-                messagebox.showwarning('Data tidak lengkap', 'Mohon isi semua data dengan benar.')
-                return
-
-            d = parse_date(tanggal)
-            if not d:
-                messagebox.showwarning('Format tanggal salah', 'Gunakan format YYYY-MM-DD, misal: 2025-12-31')
-                return
-
-            t = parse_time(waktu)
-            if not t:
-                messagebox.showwarning('Format waktu salah', 'Gunakan format HH:MM, misal: 19:30')
-                return
-
-            date_str = d.isoformat()
-
-            if tipe == 'Umum':
-                assigned = assign_tables_umum(date_str, orang)
-                if assigned is None:
-      
-                    messagebox.showinfo('Penuh', f"Maaf, meja umum untuk tanggal {date_str} sudah tidak mencukupi. Silakan pilih tanggal lain.")
-                    return
-                
-                rid = next_reservation_id()
-                rec = {
-                    'id': rid,
-                    'nama': nama,
-                    'hp': hp,
-                    'tanggal': date_str,
-                    'waktu': waktu,
-                    'orang': orang,
-                    'tipe': 'Umum',
-                    'assigned': assigned
-                }
-                reservasi_umum.setdefault(date_str, []).append(rec)
-                messagebox.showinfo('Reservasi berhasil', f"Reservasi berhasil! Kami akan menghubungi anda dalam kurun waktu 24 jam. Nomor meja yang diberikan: {', '.join(assigned)}")
-                self.create_main_menu()
-
-            elif tipe == 'VIP':
-                assigned = assign_room_generic(reservasi_vip, date_str, TOTAL_RUANG_VIP)
-                if assigned is None:
-                    messagebox.showinfo('Penuh', f"Maaf, ruangan VIP untuk tanggal {date_str} sudah penuh. Silakan pilih tanggal lain.")
-                    return
-                rid = next_reservation_id()
-                rec = {
-                    'id': rid,
-                    'nama': nama,
-                    'hp': hp,
-                    'tanggal': date_str,
-                    'waktu': waktu,
-                    'orang': orang,
-                    'tipe': 'VIP',
-                    'assigned': assigned
-                }
-                reservasi_vip.setdefault(date_str, []).append(rec)
-                messagebox.showinfo('Reservasi berhasil', f"Reservasi berhasil! Kami akan menghubungi anda dalam kurun waktu 24 jam. Nomor ruangan VIP: {assigned[0]}")
-                self.create_main_menu()
-
-            else:  
-                assigned = assign_room_generic(reservasi_event, date_str, TOTAL_RUANG_EVENT)
-                if assigned is None:
-                    messagebox.showinfo('Penuh', f"Maaf, ruangan Event untuk tanggal {date_str} sudah penuh. Silakan pilih tanggal lain.")
-                    return
-                rid = next_reservation_id()
-                rec = {
-                    'id': rid,
-                    'nama': nama,
-                    'hp': hp,
-                    'tanggal': date_str,
-                    'waktu': waktu,
-                    'orang': orang,
-                    'tipe': 'Event',
-                    'assigned': assigned
-                }
-                reservasi_event.setdefault(date_str, []).append(rec)
-                messagebox.showinfo('Reservasi berhasil', f"Reservasi berhasil! Kami akan menghubungi anda dalam kurun waktu 24 jam. Nomor ruangan Event: {assigned[0]}")
-                self.create_main_menu()
-
-        ttk.Button(btn_frame, text='Submit Reservasi', command=submit_reservation).grid(row=0, column=0, padx=6)
-        ttk.Button(btn_frame, text='Kembali', command=self.create_main_menu).grid(row=0, column=1, padx=6)
-
-    def open_staff_login(self):
-        self.clear_frame(self.main_frame)
-
-        frame = ttk.Frame(self.main_frame)
-        frame.pack(fill='both', expand=True)
-
-        ttk.Label(frame, text='Login Staf', font=('Segoe UI', 14, 'bold')).pack(pady=8)
-
-        form = ttk.Frame(frame)
-        form.pack(pady=10)
-
-        ttk.Label(form, text='Username:').grid(row=0, column=0, sticky='w', padx=4, pady=4)
-        user_entry = ttk.Entry(form, width=30)
-        user_entry.grid(row=0, column=1, padx=4, pady=4)
-
-        ttk.Label(form, text='Password:').grid(row=1, column=0, sticky='w', padx=4, pady=4)
-        pass_entry = ttk.Entry(form, width=30, show='*')
-        pass_entry.grid(row=1, column=1, padx=4, pady=4)
-
-        btn_frame = ttk.Frame(frame)
-        btn_frame.pack(pady=8)
-
-        def do_login():
-            u = user_entry.get().strip()
-            p = pass_entry.get().strip()
-            if u == STAFF_USERNAME and p == STAFF_PASSWORD:
-                self.open_staff_panel()
+        def attempt():
+            if self.staff_account.check(ue.get().strip(), pe.get().strip()):
+                dlg.destroy()
+                messagebox.showinfo('Sukses', 'Login berhasil')
+                self.show_staff_panel()
             else:
-                messagebox.showwarning('Login gagal', 'Username atau password salah. Kembali ke halaman utama.')
-                self.create_main_menu()
+                messagebox.showerror('Gagal', 'Username atau password salah')
 
-        ttk.Button(btn_frame, text='Login', command=do_login).grid(row=0, column=0, padx=6)
-        ttk.Button(btn_frame, text='Batal', command=self.create_main_menu).grid(row=0, column=1, padx=6)
+        tk.Button(dlg, text='Login', command=attempt, bg='#8C5E3C', fg='white', width=12).pack(pady=12)
 
-    def open_staff_panel(self):
-        self.clear_frame(self.main_frame)
+    def export_csv(self):
+        rows = self.reservations
+        if not rows:
+            messagebox.showinfo('Info', 'Tidak ada data untuk diekspor')
+            return
+        path = 'restobook_export.csv'
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('id,name,phone,jumlah_orang,date,time,type,table,created_at\n')
+            for r in rows:
+                f.write(f"{r.get('id')},{r.get('name')},{r.get('phone')},{r.get('jumlah_orang', '1')},{r.get('date')},{r.get('time')},{r.get('type')},{r.get('table')},{r.get('created_at')}\n")
+        messagebox.showinfo('Export', 'Data berhasil diekspor ke restobook_export.csv')
 
-        frame = ttk.Frame(self.main_frame)
-        frame.pack(fill='both', expand=True)
+    def show_customer_form(self):
+        self.clear_main()
+        left = tk.Frame(self.main_frame, bg=self['bg'])
+        left.pack(side='left', fill='both', expand=True, padx=12, pady=12)
+        right = tk.Frame(self.main_frame, bg=self['bg'], width=260)
+        right.pack(side='right', fill='y', padx=12, pady=12)
+        tk.Label(left, text='Form Reservasi', font=('Helvetica', 18, 'bold'), bg=self['bg']).pack(anchor='w', pady=6)
+        form = tk.Frame(left, bg=self['bg'])
+        form.pack(anchor='w', pady=4)
+        tk.Label(form, text='Nama:', bg=self['bg']).grid(row=0, column=0, sticky='w', pady=6)
+        name_e = tk.Entry(form, width=28)
+        name_e.grid(row=0, column=1, pady=6, padx=6)
+        tk.Label(form, text='No HP:', bg=self['bg']).grid(row=1, column=0, sticky='w', pady=6)
+        phone_e = tk.Entry(form, width=28)
+        phone_e.grid(row=1, column=1, pady=6, padx=6)
+        tk.Label(form, text='Jumlah Orang:', bg=self['bg']).grid(row=2, column=0, sticky='w', pady=6)
+        jumlah_e = tk.Entry(form, width=28)
+        jumlah_e.grid(row=2, column=1, pady=6, padx=6)
+        tk.Label(form, text='Tanggal:', bg=self['bg']).grid(row=3, column=0, sticky='w', pady=6)
+        date_e = tk.Entry(form, width=20)
+        date_e.grid(row=3, column=1, pady=6, padx=6, sticky='w')
 
-        ttk.Label(frame, text='Data Reservasi', font=('Segoe UI', 14, 'bold')).pack(pady=6)
+        def open_cal():
+            CalendarPopup(self, lambda s: date_e.delete(0, 'end') or date_e.insert(0, s))
 
-        tabs = ttk.Notebook(frame)
-        tabs.pack(fill='both', expand=True, padx=6, pady=8)
+        tk.Button(form, text='Pilih', command=open_cal, bg='#8C5E3C', fg='white', relief='flat').grid(row=3, column=2, padx=6)
+        tk.Label(form, text='Jam (HH:MM):', bg=self['bg']).grid(row=4, column=0, sticky='w', pady=6)
+        time_e = tk.Entry(form, width=20)
+        time_e.grid(row=4, column=1, pady=6, padx=6, sticky='w')
+        tk.Label(form, text='Tipe:', bg=self['bg']).grid(row=5, column=0, sticky='w', pady=6)
+        tipe_var = tk.StringVar(value='Umum')
+        tk.Radiobutton(form, text='Umum', variable=tipe_var, value='Umum', bg=self['bg']).grid(row=5, column=1, sticky='w')
+        tk.Radiobutton(form, text='VIP', variable=tipe_var, value='VIP', bg=self['bg']).grid(row=5, column=1, sticky='e')
 
-        tab_umum = ttk.Frame(tabs)
-        tab_vip = ttk.Frame(tabs)
-        tab_event = ttk.Frame(tabs)
+        def submit():
+            name = name_e.get().strip()
+            phone = phone_e.get().strip()
+            jumlah_orang = jumlah_e.get().strip()
+            tanggal = date_e.get().strip()
+            waktu = time_e.get().strip()
+            tipe = tipe_var.get()
+            if not (name and phone and jumlah_orang and tanggal and waktu):
+                messagebox.showwarning('Data kurang', 'Isi semua kolom')
+                return
+            try:
+                jumlah = int(jumlah_orang)
+                if jumlah < 1 or jumlah > 20:
+                    messagebox.showwarning('Jumlah Orang', 'Jumlah orang harus antara 1–20')
+                    return
+            except ValueError:
+                messagebox.showwarning('Format', 'Jumlah orang harus berupa angka')
+                return
+            try:
+                dt = datetime.strptime(tanggal, '%Y-%m-%d').date()
+                if dt < date.today():
+                    messagebox.showwarning('Tanggal salah', 'Pilih tanggal yang valid')
+                    return
+            except:
+                messagebox.showwarning('Format', 'Format tanggal harus YYYY-MM-DD')
+                return
+            if available_tables(self.reservations, tanggal) <= 0:
+                messagebox.showinfo('Penuh', 'Maaf, meja pada hari itu sudah habis.')
+                return
+            newr = {
+                'id': gen_id(),
+                'name': name,
+                'phone': phone,
+                'jumlah_orang': jumlah_orang,
+                'date': tanggal,
+                'time': waktu,
+                'type': tipe,
+                'table': None,
+                'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+            self.reservations.append(newr)
+            self.data['reservations'] = self.reservations
+            save_data(self.data)
+            self.show_confirmation(newr)
+            name_e.delete(0, 'end')
+            phone_e.delete(0, 'end')
+            jumlah_e.delete(0, 'end')
+            date_e.delete(0, 'end')
+            time_e.delete(0, 'end')
 
-        tabs.add(tab_umum, text='Reservasi Umum')
-        tabs.add(tab_vip, text='Reservasi VIP')
-        tabs.add(tab_event, text='Reservasi Event')
+        tk.Button(left, text='Submit Reservasi', command=submit, bg='#C69C6D', fg='white', width=20, relief='flat').pack(pady=12)
+        tk.Label(right, text='Info & Sisa Meja', font=('Helvetica', 12, 'bold'), bg=self['bg']).pack(pady=6)
+        lb = tk.Listbox(right, width=30, height=10)
+        lb.pack(pady=4)
+        for i in range(7):
+            d = date.today() + timedelta(days=i)
+            dstr = d.strftime('%Y-%m-%d')
+            lb.insert('end', f"{dstr} — Sisa meja: {available_tables(self.reservations, dstr)}")
 
-        cols = ('ID', 'Nama', 'HP', 'Tanggal', 'Waktu', 'Orang', 'Assigned')
+    def show_confirmation(self, reservation):
+        d = tk.Toplevel(self)
+        d.title('Konfirmasi')
+        d.geometry('420x160')
+        tk.Label(d, text='Reservasi telah berhasil.', font=('Helvetica', 14, 'bold')).pack(pady=8)
+        tk.Label(d, text=f"Harap hadir pada {reservation['date']} pukul {reservation['time']}.\nJumlah orang: {reservation['jumlah_orang']}", font=('Helvetica', 11)).pack(pady=4)
+        tk.Button(d, text='Tutup', command=d.destroy, bg='#8C5E3C', fg='white').pack(pady=8)
 
-        tv_umum = ttk.Treeview(tab_umum, columns=cols, show='headings', height=18)
-        for c in cols:
-            tv_umum.heading(c, text=c)
-            tv_umum.column(c, width=110 if c != 'Nama' else 180, anchor='center')
-        tv_umum.pack(fill='both', expand=True, padx=6, pady=6)
+    def show_staff_panel(self):
+        self.clear_main()
+        top = tk.Frame(self.main_frame, bg=self['bg'])
+        top.pack(fill='x', pady=6)
+        tk.Label(top, text='Data Reservasi', bg=self['bg'], font=('Helvetica', 16, 'bold')).pack(side='left')
+        filter_entry = tk.Entry(top, width=14)
+        filter_entry.pack(side='left', padx=8)
 
-        tv_vip = ttk.Treeview(tab_vip, columns=cols, show='headings', height=18)
-        for c in cols:
-            tv_vip.heading(c, text=c)
-            tv_vip.column(c, width=110 if c != 'Nama' else 180, anchor='center')
-        tv_vip.pack(fill='both', expand=True, padx=6, pady=6)
+        def fill_today():
+            filter_entry.delete(0, 'end')
+            filter_entry.insert(0, date.today().strftime('%Y-%m-%d'))
 
-        tv_event = ttk.Treeview(tab_event, columns=cols, show='headings', height=18)
-        for c in cols:
-            tv_event.heading(c, text=c)
-            tv_event.column(c, width=110 if c != 'Nama' else 180, anchor='center')
-        tv_event.pack(fill='both', expand=True, padx=6, pady=6)
+        tk.Button(top, text='Hari Ini', command=fill_today, bg='#8C5E3C', fg='white').pack(side='left', padx=6)
 
-        def refresh_tables():
-           
-            for i in tv_umum.get_children():
-                tv_umum.delete(i)
-            for i in tv_vip.get_children():
-                tv_vip.delete(i)
-            for i in tv_event.get_children():
-                tv_event.delete(i)
+        tree = ttk.Treeview(
+            self.main_frame,
+            columns=('id', 'name', 'phone', 'jumlah_orang', 'date', 'time', 'type', 'table', 'created'),
+            show='headings',
+            height=12
+        )
 
-            for date_str, lst in sorted(reservasi_umum.items()):
-                for r in lst:
-                    tv_umum.insert('', 'end', values=(r['id'], r['nama'], r['hp'], r['tanggal'], r['waktu'], r['orang'], ','.join(r['assigned'])))
+        headers = {
+            'id': 'ID',
+            'name': 'Nama',
+            'phone': 'HP',
+            'jumlah_orang': 'Jml Orang',
+            'date': 'Tanggal',
+            'time': 'Jam',
+            'type': 'Tipe',
+            'table': 'Meja',
+            'created': 'Dibuat'
+        }
 
-            for date_str, lst in sorted(reservasi_vip.items()):
-                for r in lst:
-                    tv_vip.insert('', 'end', values=(r['id'], r['nama'], r['hp'], r['tanggal'], r['waktu'], r['orang'], ','.join(r['assigned'])))
+        for col, title in headers.items():
+            tree.heading(col, text=title)
+            if col == 'jumlah_orang':
+                tree.column(col, width=80, anchor='center')
+            elif col == 'phone':
+                tree.column(col, width=100)
+            elif col == 'name':
+                tree.column(col, width=120)
+            else:
+                tree.column(col, width=90)
 
-            for date_str, lst in sorted(reservasi_event.items()):
-                for r in lst:
-                    tv_event.insert('', 'end', values=(r['id'], r['nama'], r['hp'], r['tanggal'], r['waktu'], r['orang'], ','.join(r['assigned'])))
+        tree.pack(fill='both', expand=True, pady=10)
 
-        refresh_tables()
+        def refresh():
+            target = filter_entry.get().strip()
+            for r in tree.get_children():
+                tree.delete(r)
+            rows = self.reservations if not target else [r for r in self.reservations if r.get('date') == target]
+            for r in rows:
+                tableval = r['table'] if r['table'] is not None else '-'
+                tree.insert('', 'end', values=(
+                    r['id'], r['name'], r['phone'], r.get('jumlah_orang', '1'), r['date'], r['time'],
+                    r['type'], tableval, r['created_at']
+                ))
 
-        ctrl = ttk.Frame(frame)
-        ctrl.pack(pady=6)
+        refresh()
 
-        def logout():
-            if messagebox.askyesno('Logout', 'Yakin ingin logout?'):
-                self.create_main_menu()
-
-        ttk.Button(ctrl, text='Refresh', command=refresh_tables).grid(row=0, column=0, padx=6)
-        ttk.Button(ctrl, text='Hapus Reservasi Terpilih (Umum)', command=lambda: delete_selected(tv_umum, 'Umum')).grid(row=0, column=1, padx=6)
-        ttk.Button(ctrl, text='Hapus Reservasi Terpilih (VIP)', command=lambda: delete_selected(tv_vip, 'VIP')).grid(row=0, column=2, padx=6)
-        ttk.Button(ctrl, text='Hapus Reservasi Terpilih (Event)', command=lambda: delete_selected(tv_event, 'Event')).grid(row=0, column=3, padx=6)
-        ttk.Button(ctrl, text='Logout', command=logout).grid(row=0, column=4, padx=6)
-
-        def delete_selected(treeview, tipe):
-            sel = treeview.selection()
+        def assign_table():
+            sel = tree.focus()
             if not sel:
-                messagebox.showinfo('Tidak ada pilihan', 'Pilih baris terlebih dahulu.')
+                messagebox.showwarning("Pilih Data", "Pilih reservasi dahulu")
                 return
-            if not messagebox.askyesno('Konfirmasi', 'Hapus reservasi terpilih?'):
+            values = tree.item(sel, 'values')
+            rid = values[0]
+            for r in self.reservations:
+                if r['id'] == rid:
+                    if r['table'] is None:
+                        free = get_unused_tables(self.reservations, r['date'])
+                        if not free:
+                            messagebox.showerror("Error", "Tidak ada meja kosong!")
+                            return
+                        assigned = random.choice(free)
+                        r['table'] = assigned
+                        save_data(self.data)
+                        refresh()
+                        messagebox.showinfo("Sukses", f"Otomatis memberi meja: {assigned}")
+                        return
+                    else:
+                        messagebox.showinfo("Info", "Meja sudah ditetapkan.")
+                        return
+
+        tk.Button(self.main_frame, text='Assign Meja Otomatis', bg='#C69C6D', fg='white', command=assign_table).pack(pady=10)
+
+        def delete_reservation():
+            sel = tree.focus()
+            if not sel:
+                messagebox.showwarning("Pilih Data", "Pilih reservasi dahulu")
                 return
-            for s in sel:
-                vals = treeview.item(s, 'values')
-                rid = int(vals[0])
-                tanggal = vals[3]
-            
-                if tipe == 'Umum':
-                    lst = reservasi_umum.get(tanggal, [])
-                    reservasi_umum[tanggal] = [x for x in lst if x['id'] != rid]
-                    if not reservasi_umum[tanggal]:
-                        del reservasi_umum[tanggal]
-                elif tipe == 'VIP':
-                    lst = reservasi_vip.get(tanggal, [])
-                    reservasi_vip[tanggal] = [x for x in lst if x['id'] != rid]
-                    if not reservasi_vip[tanggal]:
-                        del reservasi_vip[tanggal]
-                else:
-                    lst = reservasi_event.get(tanggal, [])
-                    reservasi_event[tanggal] = [x for x in lst if x['id'] != rid]
-                    if not reservasi_event[tanggal]:
-                        del reservasi_event[tanggal]
-            refresh_tables()
+            values = tree.item(sel, 'values')
+            rid = values[0]
+            confirm = messagebox.askyesno("Konfirmasi", "Yakin ingin menghapus reservasi ini?")
+            if not confirm:
+                return
+            self.reservations = [r for r in self.reservations if r['id'] != rid]
+            self.data['reservations'] = self.reservations
+            save_data(self.data)
+            refresh()
+            messagebox.showinfo("Sukses", "Reservasi berhasil dihapus.")
 
+        tk.Button(self.main_frame, text='Hapus Reservasi', bg='#8C3C3C', fg='white', command=delete_reservation).pack(pady=6)
 
-if __name__ == '__main__':
-    app = RestoBookApp()
-    app.mainloop()
+App = AppClass()
+App.mainloop()
