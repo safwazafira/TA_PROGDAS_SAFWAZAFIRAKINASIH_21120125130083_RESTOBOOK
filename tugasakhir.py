@@ -59,6 +59,15 @@ class Staff(User):
         self.__username = username
         self.__password = password
 
+    def get_username(self):
+        return self.__username
+
+    def set_username(self, new_username):
+        if isinstance(new_username, str) and new_username.strip():
+            self.__username = new_username.strip()
+        else:
+            raise ValueError("Username tidak valid")
+
     def check(self, u, p):
         return u == self.__username and p == self.__password
 
